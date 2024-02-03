@@ -1,0 +1,211 @@
+#LOAD
+import io
+import pandas as pd
+import requests
+if 'data_loader' not in globals():
+    from mage_ai.data_preparation.decorators import data_loader
+if 'test' not in globals():
+    from mage_ai.data_preparation.decorators import test
+
+
+@data_loader
+def load_data_from_api(*args, **kwargs):
+    """
+    Template for loading data from API
+    """
+    url = 'https://github.com/DataTalksClub/nyc-tlc-data/releases/download/green'
+
+    files = ['green_tripdata_2020-10.csv.gz', 'green_tripdata_2020-11.csv.gz', 'green_tripdata_2020-12.csv.gz']
+
+    links_list = [url + '/' + _ for _ in files]
+
+    taxi_dtypes = {
+                    'VendorID': pd.Int64Dtype(),
+                    'passenger_count': pd.Int64Dtype(),
+                    'trip_distance': float,
+                    'RatecodeID':pd.Int64Dtype(),
+                    'store_and_fwd_flag':str,
+                    'PULocationID':pd.Int64Dtype(),
+                    'DOLocationID':pd.Int64Dtype(),
+                    'payment_type': pd.Int64Dtype(),
+                    'fare_amount': float,
+                    'extra':float,
+                    'mta_tax':float,
+                    'tip_amount':float,
+                    'tolls_amount':float,
+                    'improvement_surcharge':float,
+                    'total_amount':float,
+                    'congestion_surcharge':float
+                }
+
+    # # native date parsing 
+    parse_dates = ['lpep_pickup_datetime','lpep_dropoff_datetime']
+
+    result_df = pd.DataFrame()
+    shapes = []
+
+    for link in links_list:
+        print(link)
+        temp_df = pd.read_csv(
+         link, sep=',', compression='gzip', dtype=taxi_dtypes, parse_dates=parse_dates
+         )
+
+        shapes.append(temp_df.shape)
+
+        result_df = pd.concat([result_df, temp_df])
+
+    # print(shapes)
+    # print(result_df)
+    
+    return result_df
+        
+
+
+
+    # return pd.read_csv(
+    #     url, sep=',', compression='gzip', dtype=taxi_dtypes, parse_dates=parse_dates
+    #     )
+
+
+@test
+def test_output(output, *args) -> None:
+    """
+    Template code for testing the output of the block.
+    """
+    assert output is not None, 'The output is undefined'
+
+
+
+# TRANSFORM
+import pandas as pd
+
+if 'transformer' not in globals():
+    from mage_ai.data_preparation.decorators import transformer
+if 'test' not in globals():
+    from mage_ai.data_preparation.decorators import test
+
+
+@transformer
+def transform(data, *args, **kwargs):
+    """
+    Template code for a transformer block.
+
+    Add more parameters to this function if this block has multiple parent blocks.
+    There should be one parameter for each output variable from each parent block.
+
+    Args:
+        data: The output from the upstream parent block
+        args: The output from any additional upstream blocks (if applicable)
+
+    Returns:
+        Anything (e.g. data frame, dictionary, array, int, str, etc.)
+    """
+
+    # print(data.shape) Q1
+    data = data[(data['passenger_count'] >= 1) & (data["trip_distance"] > 0)]
+    # print(data.shape) Q2
+
+    #Q3
+
+    data['lpep_pickup_date'] = data['lpep_pickup_datetime'].dt.date
+
+
+    print(data.shape) 
+    data = data[(data['lpep_pickup_date'] >= pd.to_datetime('2020-10-01')) & (data['lpep_pickup_date'] <= pd.to_datetime('2020-12-31'))]
+    print(data.shape) 
+
+
+    #Q4
+    data.rename(columns = {'VendorID' : 'vendor_id', 'RatecodeID' : 'ratedcode_id', 
+                        'PULocationID': 'pul_ocation_id', 'DOLocationID' : 'do_location_id',
+                        }, inplace = True)
+
+    #Q5
+    print(data.vendor_id.unique())
+
+
+    data['lpep_pickup_date_readable'] = data['lpep_pickup_date'].apply(lambda x: x.strftime('%Y-%m-%d'))
+
+    return data
+
+
+@test
+def test_output(output, *args) -> None:
+    """
+    Template code for testing the output of the block.
+    """
+    assert output is not None, 'The output is undefined'
+
+    assert output.vendor_id.isna().sum() == 0, 'Null in vendor_id'
+    assert len(output[output.passenger_count <= 0]) == 0, 'Passengers 0 or less'
+    assert len(output[output.trip_distance <= 0]) == 0, 'Distance 0 or less'
+
+
+#EXPORT 1 
+import pyarrow as pa
+import pyarrow.parquet as pq
+import os
+
+
+if 'data_exporter' not in globals():
+    from mage_ai.data_preparation.decorators import data_exporter
+
+
+os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = "/home/src/rational-diode-412022-91c17bd72c81.json"
+
+bucket_name = "mage-zoomcamp-ihar-4"
+object_key = 'nyc_green_taxi_data.parquet'
+
+table_name = 'nyc_green_taxi_data'
+
+root_path = f'{bucket_name}/{table_name}'
+
+
+@data_exporter
+def export_data(data, *args, **kwargs):
+
+    table = pa.Table.from_pandas(data)
+
+    gcs = pa.fs.GcsFileSystem()
+
+    pq.write_to_dataset(
+        table,
+        root_path = root_path,
+        partition_cols = ['lpep_pickup_date'],
+        filesystem = gcs
+    )
+
+
+
+#EXPORT #2
+from mage_ai.settings.repo import get_repo_path
+from mage_ai.io.config import ConfigFileLoader
+from mage_ai.io.postgres import Postgres
+from pandas import DataFrame
+from os import path
+
+if 'data_exporter' not in globals():
+    from mage_ai.data_preparation.decorators import data_exporter
+
+
+@data_exporter
+def export_data_to_postgres(df: DataFrame, **kwargs) -> None:
+    """
+    Template for exporting data to a PostgreSQL database.
+    Specify your configuration settings in 'io_config.yaml'.
+
+    Docs: https://docs.mage.ai/design/data-loading#postgresql
+    """
+    schema_name = 'mage'  # Specify the name of the schema to export data to
+    table_name = 'green_taxi'  # Specify the name of the table to export data to
+    config_path = path.join(get_repo_path(), 'io_config.yaml')
+    config_profile = 'dev'
+
+    with Postgres.with_config(ConfigFileLoader(config_path, config_profile)) as loader:
+        loader.export(
+            df,
+            schema_name,
+            table_name,
+            index=False,  # Specifies whether to include index in exported table
+            if_exists='replace',  # Specify resolution policy if table name already exists
+        )
